@@ -1,159 +1,70 @@
+import time
 import ccxt
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+import streamlit as st
 
-# -----------------------------
-# Função para buscar dados OHLCV
-# -----------------------------
-def fetch_ohlcv_binance(symbol: str, timeframe: str = "4h", since: int = None, limit: int = 500) -> pd.DataFrame:
-    """
-    Busca dados OHLCV da Binance para um símbolo e timeframe especificados.
-    Se "since" não for informado, busca dados dos últimos 30 dias.
-    """
-    ex = ccxt.binance({
-        'enableRateLimit': True,
-    })
-    if since is None:
-        # Últimos 30 dias
-        since = ex.milliseconds() - 30 * 24 * 60 * 60 * 1000
+# ---------------------------
+# Configurações padrão
+# ---------------------------
+DEFAULT_SYMBOLS = [
+    "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT",
+    "DOGE/USDT", "LINK/USDT", "MATIC/USDT", "TRX/USDT", "AVAX/USDT"
+]
 
-    all_data = []
-    while True:
+# ---------------------------
+# Navegação via Sidebar
+# ---------------------------
+st.sidebar.title("Navegação")
+page = st.sidebar.radio("Selecione a página", ["Backtest", "Movimentos em Tempo Real"])
+
+# ---------------------------
+# Página de Backtest (placeholder)
+# ---------------------------
+if page == "Backtest":
+    st.title("Backtest de Estratégia")
+    st.write("Aqui ficaria o código do backtest de estratégia. Utilize a estrutura já existente ou adapte conforme necessário.")
+    
+# ---------------------------
+# Página de Movimentos em Tempo Real
+# ---------------------------
+else:
+    st.title("Movimentos em Tempo Real dos Altcoins da Binance")
+    
+    # Inicializa o flag de conexão no session_state
+    if 'realtime_on' not in st.session_state:
+        st.session_state.realtime_on = False
+
+    # Botões para conectar e desconectar
+    col1, col2 = st.columns(2)
+    if col1.button("Conectar"):
+        st.session_state.realtime_on = True
+    if col2.button("Desconectar"):
+        st.session_state.realtime_on = False
+
+    # Se a conexão estiver ativa, atualiza a cada 2 segundos
+    if st.session_state.realtime_on:
+        st.write("Conectado. Atualizando dados em tempo real...")
+        ex = ccxt.binance({
+            "enableRateLimit": True,
+        })
+
         try:
-            data = ex.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+            dados = []
+            # Para cada altcoin na lista de símbolos, busca informações do ticker
+            for sym in DEFAULT_SYMBOLS:
+                ticker = ex.fetch_ticker(sym)
+                dados.append({
+                    "Símbolo": sym,
+                    "Preço": ticker["last"],
+                    "Variação (%)": ticker.get("percentage", None)
+                })
+            df = pd.DataFrame(dados)
+            st.table(df)
         except Exception as e:
-            print(f"Erro ao buscar dados: {e}")
-            break
-        if not data:
-            break
-        all_data.extend(data)
-        last_ts = data[-1][0]
-        # Se os dados retornados forem menos do que o limite, encerra
-        if len(data) < limit:
-            break
-        since = last_ts + 1
-    if not all_data:
-        return pd.DataFrame()
-    df = pd.DataFrame(all_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("timestamp", inplace=True)
-    return df.sort_index()
-
-# -----------------------------
-# Função para cálculo de indicadores técnicos
-# -----------------------------
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    # Retorno percentual do candle
-    df['ret'] = df['close'].pct_change()
-
-    # Cálculo do RSI (14 períodos)
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
-    rs = avg_gain / avg_loss
-    df['rsi_14'] = 100 - (100 / (1 + rs))
-
-    # Cálculo do z-score do volume (janela de 24 candles)
-    df['vol_mean'] = df['volume'].rolling(window=24, min_periods=24).mean()
-    df['vol_std'] = df['volume'].rolling(window=24, min_periods=24).std()
-    df['vol_z'] = (df['volume'] - df['vol_mean']) / (df['vol_std'].replace(0, np.nan))
-    return df
-
-# -----------------------------
-# Função para detectar eventos extremos
-# -----------------------------
-def detect_extreme_events(df: pd.DataFrame, threshold: float = 0.80) -> pd.DataFrame:
-    """
-    Detecta os candles cujo retorno seja maior ou igual ao threshold.
-    Por padrão, identifica movimentos de ganhos iguais ou maiores que 80%.
-    """
-    df = df.copy()
-    df['extreme_event'] = (df['ret'] >= threshold).astype(int)
-    events = df[df['extreme_event'] == 1]
-    return events
-
-# -----------------------------
-# Função para clusterizar os eventos extremos
-# -----------------------------
-def cluster_events(events: pd.DataFrame):
-    """
-    Utiliza KMeans para clusterizar os eventos com base em alguns indicadores.
-    São utilizados os indicadores: retorno, RSI e volume z-score.
-    """
-    if events.empty:
-        return None, None
-    # Seleciona as colunas de interesse (garantindo que não existam NaNs)
-    features = events[['ret', 'rsi_14', 'vol_z']].dropna()
-    if features.empty:
-        return None, None
-    # Padroniza os dados
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(features)
-    # Definindo um número arbitrário de clusters (ex.: 2)
-    kmeans = KMeans(n_clusters=2, random_state=42)
-    clusters = kmeans.fit_predict(X_scaled)
-    features['cluster'] = clusters
-    return features, kmeans
-
-# -----------------------------
-# Bloco Principal
-# -----------------------------
-if __name__ == "__main__":
-    # Exemplo com um par de altcoin (pode trocar por "ETH/USDT", "SOL/USDT", etc.)
-    symbol = "SOL/USDT"
-    timeframe = "4h"
-    # Define a data inicial (em milissegundos); por exemplo: 1º de janeiro de 2022
-    since_str = "2022-01-01T00:00:00Z"
-    since_ms = int(pd.Timestamp(since_str).timestamp() * 1000)
-
-    print(f"Buscando dados para {symbol}...")
-    df = fetch_ohlcv_binance(symbol, timeframe, since_ms)
-    if df.empty:
-        print("Nenhum dado foi retornado. Verifique o símbolo ou a conexão.")
-        exit()
-
-    print("Calculando indicadores...")
-    df = add_indicators(df)
-
-    print("Detectando eventos extremos (movimentos >= 80%)...")
-    extreme_events = detect_extreme_events(df, threshold=0.80)
-    print(f"Eventos extremos encontrados: {len(extreme_events)}")
-    if extreme_events.empty:
-        print("Nenhum evento extremo detectado.")
+            st.error(f"Erro ao buscar dados: {e}")
+        
+        # Aguarda 2 segundos e reexecuta a página para atualização contínua
+        time.sleep(2)
+        st.experimental_rerun()
     else:
-        print(extreme_events[['close', 'ret', 'rsi_14', 'vol_z']])
-
-        print("Clusterizando os eventos extremos...")
-        clustered_events, kmeans_model = cluster_events(extreme_events)
-        if clustered_events is not None:
-            print("Resultados de Clusterização:")
-            print(clustered_events)
-
-            # Plot do resultado da clusterização: RSI vs Volume z-Score
-            plt.figure(figsize=(8, 6))
-            for clust in clustered_events['cluster'].unique():
-                subset = clustered_events[clustered_events['cluster'] == clust]
-                plt.scatter(subset['rsi_14'], subset['vol_z'], label=f"Cluster {clust}", s=100, alpha=0.7)
-            plt.xlabel("RSI (14 períodos)")
-            plt.ylabel("Volume Z-Score (24 períodos)")
-            plt.title("Clusterização de Eventos Extremos")
-            plt.legend()
-            plt.grid(True)
-            plt.show()
-
-    # Plot do preço com marcação dos eventos extremos
-    plt.figure(figsize=(12, 6))
-    plt.plot(df.index, df['close'], label="Preço")
-    if not extreme_events.empty:
-        plt.scatter(extreme_events.index, extreme_events['close'], color="red", label="Eventos extremos", zorder=5)
-    plt.xlabel("Data")
-    plt.ylabel("Preço")
-    plt.title(f"{symbol} - Preço com Eventos Extremos")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+        st.write("Clique em 'Conectar' para iniciar a conexão com os dados em tempo real.")
